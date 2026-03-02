@@ -1,7 +1,7 @@
 .\"
 .\"   Man page for the Limited Shell (lshell) project.
 .\"
-.TH lshell 1 "October, 2024" "v0.10.10"
+.TH lshell 1 "March, 2026" "v1.0.0rc3"
 
 .SH NAME
 lshell \- Limited Shell
@@ -9,11 +9,14 @@ lshell \- Limited Shell
 .SH SYNOPSIS
 .B lshell 
 [\fIOPTIONS\fR]
+.br
+.B lshell policy-show
+[\fIOPTIONS\fR]
 
 .SH DESCRIPTION
-\fBlshell\fR provides a limited shell configured per user. The configuration is done 
-quite simply using a configuration file. You can also use lshell within scripts by 
-adding the appropriate shebang (#!/usr/bin/lshell) to your script file.
+\fBlshell\fR provides a limited shell configured per user via a configuration file.
+You can also use lshell within scripts by adding the appropriate shebang
+(#!/usr/bin/lshell) to your script file.
 
 Coupled with ssh's 
 .I authorized_keys 
@@ -21,24 +24,41 @@ or with
 .I /etc/shells
 and 
 .I /etc/passwd
-, it becomes very easy to restrict user's access to a limited set of command.
+, it becomes very easy to restrict a user's access to a limited set of commands.
 
 .SH OPTIONS
 .TP
 .B \--config \fI<FILE>\fR
-Specify config file
+Specify configuration file
 .TP
 .B \--log \fI<DIR>\fR
 Specify the log directory
 .TP
 .B \--<param> \fI<value>\fR
-where <param> is *any* config file parameter
+where <param> is any config file parameter
 .TP
 .B \-h, --help
 Show help message
 .TP
 .B \--version
 Show version
+.TP
+.B policy-show
+Run admin diagnostics mode. Use with:
+.RS
+.TP
+.B \--user \fI<NAME>\fR
+target username
+.TP
+.B \--group \fI<NAME>\fR
+target group (repeatable)
+.TP
+.B \--command \fI<CMD>\fR
+command to evaluate against final policy
+.TP
+.B \--json
+print diagnostics as JSON
+.RE
 
 .SH CONFIGURATION
 You can configure lshell through its configuration file:
@@ -52,8 +72,8 @@ On *BSD  \-> /usr/{pkg,local}/etc/lshell.conf
 .LP
 .RE
 .fi
-The configuration is dynamically reloaded. Which means that you can edit
-the configuration, and all the connected users will automatically load it. In
+The configuration is dynamically reloaded. This means you can edit the
+configuration and all connected users will automatically load it. In
 case you are using multiple configuration files (see include_dir), you will
 need to refresh the main configuration's timestamp, in order to reload the
 configuration:
@@ -79,7 +99,7 @@ touch /path/to/lshell.conf
 .LP
 .RE
 .fi
-Order of priority when loading preferences is the following:
+Preference loading priority:
 .RS
 .ft 3
 .nf
@@ -142,9 +162,7 @@ while this should not be a common practice, setting this variable to an empty
 string will disable LD_PRELOAD prepend of the commands. This is done at your
 own risk, as lshell becomes easily breached using some commands like find(1)
 using the -exec flag.
-.RS
 .SS [default] and/or [username] and/or [grp:groupname]
-.TP
 .TP
 .I aliases
 command aliases list (similar to bash's alias directive)
@@ -158,6 +176,10 @@ If a command is specified without arguments (e.g., 'echo'), the command is allow
 .RS
 .BR \ \ \ \ -
 If a command is specified with exact arguments (e.g., 'echo asd'), only that specific command with those arguments will be allowed.
+.RE
+.RS
+.BR \ \ \ \ -
+Local executables must be explicitly listed with a relative path (e.g., './deploy.sh').
 .RE
 .RS
 .BR \ \ \ \ -
@@ -179,7 +201,7 @@ commands (e.g. find, vim, xargs).
 important: commands defined in 'allowed_shell_escape' override their definition
 in the \'allowed\' variable.
 .TP
-.I allowed_file_extension
+.I allowed_file_extensions
 a list of allowed file extensions that can be provided in the command line.
 If a list of allowed extensions is provided, all other file extensions will be disallowed.
 .TP
@@ -188,7 +210,7 @@ a list of path; all executable files inside these path will be allowed
 .TP
 .I disable_exit
 disable user exit, this could be useful when lshell is spawned from another
-none-restricted shell (e.g. bash)
+non-restricted shell (e.g. bash)
 .TP
 .I env_path
 update the environment variable $PATH of the user (optional)
@@ -226,7 +248,9 @@ directory. A wildcard can be used:
 set the introduction to print at login
 .TP
 .I login_script
-define the script to run at user login
+define the script to run at user login. This script is executed in a child shell
+process, so shell state changes there (for example \fBumask\fR) do not persist
+in the lshell parent process.
 .TP
 .I passwd
 password of specific user (default is empty)
@@ -340,10 +364,23 @@ different user than the default root.
 .I timer
 a value in seconds for the session timer
 .TP
+.I umask
+set process umask for the lshell session. Value must be octal (0000 to 0777),
+for example \fB0002\fR.
+.RS
+\fB0002\fR -> files 664 / directories 775
+.RE
+.RS
+\fB0022\fR -> files 644 / directories 755
+.RE
+.RS
+\fB0077\fR -> files 600 / directories 700
+.RE
+.TP
 .I strict
 logging strictness. If set to 1, any unknown command is considered as \
 forbidden, and user's warning counter is decreased. If set to 0, command is \
-considered as unknown, and user is only warned (i.e. *** unknown synthax)
+considered as unknown, and user is only warned (i.e. *** unknown syntax)
 .TP
 .I warning_counter
 number of warnings when user enters a forbidden value before getting exited \
@@ -373,6 +410,11 @@ ignored (uses scp(1) from within session)
 .BR \ \ \ \ allowed     :
 +['scp', 'env', 'pwd', 'groups', 'unset', 'unalias']
 .RE
+.TP
+.I policy_commands
+enable/disable policy introspection builtins. If set to 1 (default), users can
+run \fBpolicy-show\fR, \fBpolicy-path\fR, \fBpolicy-sudo\fR (and aliases
+\fBlpath\fR, \fBlsudo\fR). If set to 0, these commands are hidden.
 
 .SH SHELL BUILTIN COMMANDS
 Here is the set of commands that are always available with lshell:
@@ -390,14 +432,23 @@ to allowed commands.
 .I help, ?
 print the list of allowed commands
 .TP
-. I history
+.I history
 print the commands history
 .TP
-. I lpath
+.I policy-show [command]
+show resolved policy values. If a command is provided, also show allow/deny decision.
+.TP
+.I policy-path
 lists all allowed and forbidden path
 .TP
-. I lsudo
+.I policy-sudo
 lists all sudo allowed commands
+.TP
+.I lpath
+alias for \fBpolicy-path\fR
+.TP
+.I lsudo
+alias for \fBpolicy-sudo\fR
 .TP
 .I jobs
 list background jobs
@@ -426,6 +477,12 @@ This will override the default options specified for configuration and/or log \
 file
 .RE
 .TP
+.B $ lshell --config /path/to/myconf.file --umask 0077
+.RS
+Runs lshell with a private session umask; new files default to 600 and
+directories to 700.
+.RE
+.TP
 .B $ ./test_script.lsh
 .RS
 If you include lshell in a script with the \fBshebang (e.g. #!/usr/bin/lshell)\fR and use the \fB`.lsh` extension\fR:
@@ -443,8 +500,8 @@ This allows for limited shell commands to be executed within the script while ma
 .RE
 
 .SH USE CASE
-The primary goal of lshell, was to be able to create shell accounts \
-with ssh access and restrict their environment to a couple a needed \
+The primary goal of lshell is to create shell accounts \
+with ssh access and restrict their environment to a couple of needed \
 commands. 
 In this example, User 'foo' and user 'bar' both belong to the 'users' UNIX \
 group:
@@ -452,7 +509,7 @@ group:
 .B User foo:
 .RS 
  - must be able to access /usr and /var but not /usr/local
- - user all command in his PATH but 'su'
+ - can use all commands in PATH except 'su'
  - has a warning counter set to 5
  - has his home path set to '/home/users'
 .RE
@@ -469,7 +526,7 @@ In this case, my configuration file will look something like this:
 .ft 3
 .nf
 .sp
-# CONFIURATION START
+# CONFIGURATION START
 [global]
 logpath         : /var/log/lshell/
 loglevel        : 2
@@ -500,7 +557,7 @@ allowed         : + ['ping'] - ['ls']
 path            : - ['/usr/local']
 strict          : 1
 scpforce        : '/home/bar/uploads/'
-# CONFIURATION END
+# CONFIGURATION END
 .ft
 .LP
 .RE
@@ -509,7 +566,7 @@ scpforce        : '/home/bar/uploads/'
 .SH NOTES
 .TP
 In order to log a user's warnings into the logging directory (default \
-\fI/var/log/lshell/\fR) , you must firt create the folder (if it doesn't \
+\fI/var/log/lshell/\fR), you must first create the folder (if it does not \
 exist yet) and chown it to lshell group:
 .RS
 .ft 3

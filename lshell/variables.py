@@ -1,9 +1,9 @@
-""" This file contains all the variables used in lshell """
+"""This file contains all the variables used in lshell"""
 
 import sys
 import os
 
-__version__ = "0.10.10"
+__version__ = "1.0.0rc5"
 
 # Required config variable list per user
 required_config = ["allowed", "forbidden", "warning_counter"]
@@ -33,6 +33,12 @@ USAGE = f"""Usage: lshell [OPTIONS]
   --<param> <value> : where <param> is *any* config file parameter
   -h, --help        : Show this help message
   --version         : Show version
+
+Usage: lshell policy-show [OPTIONS] --command <CMD>
+  --config <file>   : Config file location (default {configfile})
+  --user <name>     : Target username
+  --group <name>    : Target group (repeat for multiple groups)
+  --json            : Print JSON diagnostics output
 """
 
 # Intro Text
@@ -76,24 +82,12 @@ configparams = [
     "history_size=",
     "history_file=",
     "path_noexec=",
+    "umask=",
     "allowed_shell_escape=",
     "winscp=",
     "disable_exit=",
+    "policy_commands=",
     "include_dir=",
-]
-
-builtins_list = [
-    "cd",
-    "clear",
-    "exit",
-    "export",
-    "history",
-    "lpath",
-    "lsudo",
-    "help",
-    "fg",
-    "bg",
-    "jobs",
 ]
 
 FORBIDDEN_ENVIRON = (

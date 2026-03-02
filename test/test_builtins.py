@@ -70,9 +70,8 @@ class TestFunctions(unittest.TestCase):
     def test_07_builtin_cd_tilda(self):
         """F07 | built-in cd - tilda bug"""
         expected = (
-            '*** forbidden path -> "/etc/passwd"\r\n*** You have'
-            " 1 warning(s) left, before getting kicked out.\r\nThis "
-            "incident has been reported.\r\n"
+            'lshell: forbidden path: "/etc/passwd"\r\n'
+            "lshell: warning: 1 violation remaining before session termination\r\n"
         )
         self.child.sendline("ls ~/../../etc/passwd")
         self.child.expect(PROMPT)
@@ -82,9 +81,8 @@ class TestFunctions(unittest.TestCase):
     def test_08_builtin_cd_quotes(self):
         """F08 | built-in - quotes in cd "/" """
         expected = (
-            '*** forbidden path -> "/"\r\n*** You have'
-            " 1 warning(s) left, before getting kicked out.\r\nThis "
-            "incident has been reported.\r\n"
+            'lshell: forbidden path: "/"\r\n'
+            "lshell: warning: 1 violation remaining before session termination\r\n"
         )
         self.child.sendline('ls -ld "/"')
         self.child.expect(PROMPT)
@@ -99,9 +97,7 @@ class TestFunctions(unittest.TestCase):
         expected = "2"
         child.sendline("cd nRVmmn8RGypVneYIp8HxyVAvaEaD55; echo $?")
         child.expect(PROMPT)
-        child.sendline("echo $?")
-        child.expect(PROMPT)
-        result = child.before.decode("utf8").split("\n")[1].strip()
+        result = child.before.decode("utf8").split("\n")[2].strip()
         self.assertEqual(expected, result)
         self.do_exit(child)
 
@@ -151,7 +147,7 @@ class TestFunctions(unittest.TestCase):
         child.expect(PROMPT)
 
         output = child.before.decode("utf-8").split("\n")[1].strip()
-        expected_output = f"ERROR: Unable to read environment file: {env_file}"
+        expected_output = f"lshell: unable to read environment file: {env_file}"
 
         assert (
             output == expected_output
