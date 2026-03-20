@@ -66,6 +66,26 @@ class TestSecurityHardeningFunctional(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("YES", result.stdout)
 
+    def test_assignment_only_command_propagates_to_next_and_segment(self):
+        """Assignment-only command should be visible in subsequent && command."""
+        result = self._run_lsh_script(
+            script_body="LSH_AND_CHAIN=YES && echo $LSH_AND_CHAIN\n",
+            extra_shell_args="--forbidden \"[]\"",
+        )
+        self.assertEqual(result.returncode, 0)
+        lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        self.assertIn("YES", lines)
+
+    def test_single_quoted_variable_remains_literal_in_chained_execution(self):
+        """Single-quoted variables should remain literal after assignment in a chain."""
+        result = self._run_lsh_script(
+            script_body="LSH_AND_QUOTED=YES && echo '$LSH_AND_QUOTED'\n",
+            extra_shell_args="--forbidden \"[]\"",
+        )
+        self.assertEqual(result.returncode, 0)
+        lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        self.assertIn("$LSH_AND_QUOTED", lines)
+
     def test_forbidden_redirection_is_blocked_and_file_not_created(self):
         """Forbidden redirection should fail closed and not write output file."""
         output_path = "/tmp/lshell_hardening_forbidden_redir.txt"
@@ -138,3 +158,35 @@ class TestSecurityHardeningFunctional(unittest.TestCase):
         finally:
             if os.path.exists(bash_env):
                 os.remove(bash_env)
+
+    def test_path_acl_glob_checks_all_matches_and_blocks_forbidden_target(self):
+        """Glob path checks must fail closed when any expanded item is forbidden."""
+        with tempfile.TemporaryDirectory(prefix="lshell-path-hardening-") as tmpdir:
+            allowed_dir = os.path.join(tmpdir, "a_allowed")
+            blocked_dir = os.path.join(tmpdir, "z_blocked")
+            os.makedirs(allowed_dir, exist_ok=True)
+            os.makedirs(blocked_dir, exist_ok=True)
+
+            result = self._run_lsh_script(
+                script_body=f"echo {tmpdir}/*\necho SAFE\n",
+                extra_shell_args=f"--path \"['{allowed_dir}']\" --strict 0",
+            )
+
+            combined = result.stdout + result.stderr
+            self.assertIn(f'lshell: forbidden path: "{blocked_dir}/"', combined)
+
+    def test_path_acl_prefix_confusion_is_blocked(self):
+        """ACL allow for /path/allow must not allow sibling /path/allow-evil."""
+        with tempfile.TemporaryDirectory(prefix="lshell-path-prefix-hardening-") as tmpdir:
+            allowed_dir = os.path.join(tmpdir, "allow")
+            sibling_dir = os.path.join(tmpdir, "allow-evil")
+            os.makedirs(allowed_dir, exist_ok=True)
+            os.makedirs(sibling_dir, exist_ok=True)
+
+            result = self._run_lsh_script(
+                script_body=f"echo {sibling_dir}\necho SAFE\n",
+                extra_shell_args=f"--path \"['{allowed_dir}']\" --strict 0",
+            )
+
+            combined = result.stdout + result.stderr
+            self.assertIn(f'lshell: forbidden path: "{sibling_dir}/"', combined)

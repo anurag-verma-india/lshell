@@ -4,6 +4,7 @@ import glob
 import sys
 import os
 import re
+import shlex
 import readline
 import signal
 
@@ -25,6 +26,7 @@ POLICY_COMMANDS = [
 
 builtins_list = [
     "cd",
+    "ls",
     "clear",
     "exit",
     "export",
@@ -40,6 +42,13 @@ builtins_list = [
     "jobs",
     "source",
 ]
+
+
+def _cancel_job_timeout(job):
+    """Cancel a watchdog timer attached to a background job, if any."""
+    timer = getattr(job, "lshell_timeout_timer", None)
+    if timer is not None:
+        timer.cancel()
 
 
 def cmd_lpath(conf):
@@ -114,32 +123,32 @@ def cmd_history(conf, log):
 
 def cmd_export(args):
     """export environment variables"""
-    # if command contains at least 1 space
-    if args.count(" "):
-        env = args.split(" ", 1)[1]
-        # if it contains the equal sign, consider only the first one
-        if env.count("="):
-            var, value = env.split(" ")[0].split("=")[0:2]
-            # disallow dangerous variable
-            if var in variables.FORBIDDEN_ENVIRON:
-                return 1, var
-            # Strip the quotes from the value if it begins and ends with quotes (single or double)
-            if (value.startswith('"') and value.endswith('"')) or (
-                value.startswith("'") and value.endswith("'")
-            ):
-                value = value[1:-1]
-            os.environ.update({var: value})
+    try:
+        tokens = shlex.split(args, posix=True)
+    except ValueError:
+        return 0, None
+
+    if len(tokens) >= 2 and "=" in tokens[1]:
+        var, value = tokens[1].split("=", 1)
+        # disallow dangerous variable
+        if var in variables.FORBIDDEN_ENVIRON:
+            return 1, var
+        os.environ.update({var: value})
     return 0, None
 
 
 def cmd_source(envfile):
     """Source a file in the current shell context"""
-    envfile = os.path.expandvars(envfile)
+    envfile = envfile.strip().strip("'").strip('"')
+    envfile = os.path.expanduser(os.path.expandvars(envfile))
     try:
         with open(envfile, encoding="utf-8") as env_vars:
             for env_var in env_vars.readlines():
-                if env_var.split(" ", 1)[0] == "export":
-                    cmd_export(env_var.strip())
+                line = env_var.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    cmd_export(line)
     except (OSError, IOError):
         sys.stderr.write(f"lshell: unable to read environment file: {envfile}\n")
         return 1
@@ -198,6 +207,11 @@ def check_background_jobs():
             active_jobs.append(job)
             continue
 
+        _cancel_job_timeout(job)
+        if getattr(job, "lshell_timeout_triggered", False):
+            print(f"[{idx}]+  Timed Out               {_job_command(job)}")
+            continue
+
         status = "Done" if job.returncode == 0 else "Failed"
         args = _job_command(job)
         # only print if the job has not been interrupted by the user
@@ -209,6 +223,8 @@ def check_background_jobs():
 
 def get_job_status(job):
     """Return the status of a background job."""
+    if getattr(job, "lshell_timeout_triggered", False):
+        return "Timed Out"
     if job.poll() is None:
         status = "Stopped"
     elif job.poll() == 0:
@@ -229,6 +245,7 @@ def jobs():
     active_jobs = []
     for job in BACKGROUND_JOBS:
         if job.poll() is not None:
+            _cancel_job_timeout(job)
             continue
 
         active_jobs.append(job)

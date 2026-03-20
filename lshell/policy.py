@@ -13,6 +13,7 @@ import textwrap
 from getpass import getuser
 
 from lshell import builtincmd
+from lshell import containment
 from lshell import configschema
 from lshell import sec
 from lshell import utils
@@ -47,6 +48,7 @@ DISPLAY_KEY_ORDER = [
     "sftp",
     "umask",
     "aliases",
+    "messages",
     "winscp",
     "policy_commands",
     "disable_exit",
@@ -184,7 +186,10 @@ def _merge_section(conf_raw, section, section_items, key_sources, trace):
                         raise ValueError(
                             "'allowed_shell_escape' cannot be set to 'all'"
                         )
-                    conf_raw.update({key: _expand_all()})
+                    if key == "allowed":
+                        conf_raw.update({key: _expand_all()})
+                    else:
+                        raise ValueError(f"'{key}' cannot be set to 'all'")
                     trace.append(
                         {
                             "section": section,
@@ -230,7 +235,7 @@ def _merge_section(conf_raw, section, section_items, key_sources, trace):
                         }
                     )
                     previous = conf_raw.get(key)
-        elif key == "allowed" and split[0].strip() == "'all'":
+        elif key == "allowed" and configschema.is_all_literal(split[0]):
             conf_raw.update({key: _expand_all()})
             trace.append(
                 {
@@ -292,6 +297,7 @@ def _build_runtime_policy(conf_raw, username):
         "overssh",
         "strict",
         "aliases",
+        "messages",
         "allowed_cmd_path",
         "winscp",
         "policy_commands",
@@ -315,7 +321,7 @@ def _build_runtime_policy(conf_raw, username):
                 policy[item] = []
             elif item in ["scp_upload", "scp_download"]:
                 policy[item] = 1
-            elif item in ["aliases"]:
+            elif item in ["aliases", "messages"]:
                 policy[item] = {}
             elif item in ["policy_commands"]:
                 policy[item] = 1
@@ -355,8 +361,10 @@ def _build_runtime_policy(conf_raw, username):
     if "sudo_commands" in conf_raw and configschema.is_all_literal(
         str(conf_raw["sudo_commands"])
     ):
-        exclude = builtincmd.builtins_list + ["sudo"]
-        policy["sudo_commands"] = [x for x in policy["allowed"] if x not in exclude]
+        exclude = [cmd for cmd in builtincmd.builtins_list if cmd != "ls"] + ["sudo"]
+        policy["sudo_commands"] = list(
+            dict.fromkeys(x for x in policy["allowed"] if x not in exclude)
+        )
 
     policy["allowed"] += policy["allowed_shell_escape"]
 
@@ -368,6 +376,9 @@ def _build_runtime_policy(conf_raw, username):
         if ";" in policy["forbidden"]:
             policy["forbidden"].remove(";")
 
+    runtime_limits = containment.get_runtime_limits(conf_raw)
+    for key in containment.RUNTIME_LIMIT_INT_KEYS:
+        policy[key] = getattr(runtime_limits, key)
     return policy
 
 
@@ -472,7 +483,7 @@ def policy_command_decision(command_line, policy):
             return {"allowed": False, "reason": f"unknown syntax '{full_command}'"}
 
         allowed_extensions = policy.get("allowed_file_extensions")
-        if allowed_extensions:
+        if allowed_extensions and sec.should_enforce_file_extensions(command):
             check_extensions, disallowed_extensions = sec.check_allowed_file_extensions(
                 full_command, allowed_extensions
             )
@@ -694,11 +705,29 @@ def print_user_view(result, command_line=None, decision=None):
     timer_value = policy.get("timer")
     forbidden = sorted(set(policy.get("forbidden", [])), key=str)
     extensions = policy.get("allowed_file_extensions", [])
+    def _limit_or_unlimited(value, suffix=""):
+        return f"{value}{suffix}" if int(value) > 0 else "Unlimited"
 
     print(_paint("Policy Overview", "bold", color))
     print("-" * 15)
     print(f"Strict mode            : {strict_mode}")
     print(f"Warnings remaining     : {warnings_value}")
+    print(
+        "Max sessions/user      : "
+        + _limit_or_unlimited(policy.get("max_sessions_per_user", 0))
+    )
+    print(
+        "Max background jobs    : "
+        + _limit_or_unlimited(policy.get("max_background_jobs", 0))
+    )
+    print(
+        "Command timeout (sec)  : "
+        + _limit_or_unlimited(policy.get("command_timeout", 0), "s")
+    )
+    print(
+        "Max processes          : "
+        + _limit_or_unlimited(policy.get("max_processes", 0))
+    )
     print("")
 
     print(_paint("Command Access", "bold", color))

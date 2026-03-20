@@ -12,6 +12,9 @@ lshell \- Limited Shell
 .br
 .B lshell policy-show
 [\fIOPTIONS\fR]
+.br
+.B lshell harden-init
+[\fIOPTIONS\fR]
 
 .SH DESCRIPTION
 \fBlshell\fR provides a limited shell configured per user via a configuration file.
@@ -24,7 +27,7 @@ or with
 .I /etc/shells
 and 
 .I /etc/passwd
-, it becomes very easy to restrict a user's access to a limited set of commands.
+, it is straightforward to restrict a user's access to a limited set of commands.
 
 .SH OPTIONS
 .TP
@@ -35,7 +38,7 @@ Specify configuration file
 Specify the log directory
 .TP
 .B \--<param> \fI<value>\fR
-where <param> is any config file parameter
+where <param> is any configuration file parameter
 .TP
 .B \-h, --help
 Show help message
@@ -58,6 +61,35 @@ command to evaluate against final policy
 .TP
 .B \--json
 print diagnostics as JSON
+.RE
+.TP
+.B harden-init
+Generate a hardened baseline configuration profile. Use with:
+.RS
+.TP
+.B \--list-templates
+list available hardened templates
+.TP
+.B \--profile \fI<NAME>\fR
+template name (\fBsftp-only\fR, \fBrsync-backup\fR, \fBdeploy-minimal\fR, \fBreadonly-support\fR)
+.TP
+.B \--group \fI<NAME>\fR
+add scoped \fB[grp:<name>]\fR section (repeatable)
+.TP
+.B \--user \fI<NAME>\fR
+add scoped \fB[user:<name>]\fR section (repeatable)
+.TP
+.B \--output \fI<FILE>\fR
+write rendered config to file (default: /etc/lshell.d/<profile>.conf)
+.TP
+.B \--stdout
+print rendered config to stdout
+.TP
+.B \--dry-run
+render and run sanity checks without writing files
+.TP
+.B \--explain
+print profile hardening rationale
 .RE
 
 .SH CONFIGURATION
@@ -185,8 +217,8 @@ Local executables must be explicitly listed with a relative path (e.g., './deplo
 .BR \ \ \ \ -
 To allow all commands in the user's PATH, use the value 'all'.
 .RE
-if  sudo(8) is installed and sudo_noexec.so is available, it will be loaded
-before running every command, preventing it from  running  further  commands
+if sudo(8) is installed and sudo_noexec.so is available, it will be loaded
+before running every command, preventing it from running further commands
 itself. If not available, beware of commands like vim/find/more/etc. that will
 allow users to execute code (e.g. /bin/sh) from within the application,
 thus easily escaping lshell. See variable 'path_noexec' to use an alternative
@@ -198,7 +230,7 @@ a list of the allowed commands that are permitted to execute other programs
 allowed. Warning: do not put here any command that can execute arbitrary
 commands (e.g. find, vim, xargs).
 
-important: commands defined in 'allowed_shell_escape' override their definition
+Important: commands defined in 'allowed_shell_escape' override their definition
 in the \'allowed\' variable.
 .TP
 .I allowed_file_extensions
@@ -206,7 +238,7 @@ a list of allowed file extensions that can be provided in the command line.
 If a list of allowed extensions is provided, all other file extensions will be disallowed.
 .TP
 .I allowed_cmd_path
-a list of path; all executable files inside these path will be allowed
+a list of paths; all executable files inside these paths are allowed
 .TP
 .I disable_exit
 disable user exit, this could be useful when lshell is spawned from another
@@ -247,6 +279,43 @@ directory. A wildcard can be used:
 .I intro
 set the introduction to print at login
 .TP
+.I messages
+optional dictionary used to customize user-facing shell messages. Unsupported
+keys and unsupported placeholders are rejected during configuration parsing.
+.RS
+\fBunknown_syntax\fR: \fB{command}\fR
+.RE
+.RS
+\fBforbidden_generic\fR: \fB{messagetype}\fR, \fB{command}\fR
+.RE
+.RS
+\fBforbidden_command\fR: \fB{command}\fR
+.RE
+.RS
+\fBforbidden_path\fR: \fB{command}\fR
+.RE
+.RS
+\fBforbidden_character\fR: \fB{command}\fR
+.RE
+.RS
+\fBforbidden_control_char\fR: \fB{command}\fR
+.RE
+.RS
+\fBforbidden_command_over_ssh\fR: \fB{message}\fR, \fB{command}\fR
+.RE
+.RS
+\fBforbidden_scp_over_ssh\fR: \fB{message}\fR
+.RE
+.RS
+\fBwarning_remaining\fR: \fB{remaining}\fR, \fB{violation_label}\fR
+.RE
+.RS
+\fBsession_terminated\fR: no placeholders
+.RE
+.RS
+\fBincident_reported\fR: no placeholders
+.RE
+.TP
 .I login_script
 define the script to run at user login. This script is executed in a child shell
 process, so shell state changes there (for example \fBumask\fR) do not persist
@@ -271,18 +340,29 @@ set the user's prompt format (default: username)
 .RE
 .TP
 .I prompt_short
-set prompt style for current directory - 0, 1 or 2. Default is 0.
+set how the current directory is rendered in the prompt path segment. Accepted
+values are 0, 1, or 2 (default: 0).
 .RS
 .BR \ \ \ \ 0
--> will show the current directory as compared to home directory ~/current/dir
+-> show path relative to home when inside home (e.g. \fB~/projects/api\fR),
+and absolute path when outside home (e.g. \fB/var/log\fR)
 .RE
 .RS
 .BR \ \ \ \ 1
--> will only show the current directory name
+-> show only basename of current directory (e.g. \fBapi\fR)
 .RE
 .RS
 .BR \ \ \ \ 2
--> will show the complete path to the current directory
+-> show full absolute path of current directory (e.g. \fB/home/user/projects/api\fR)
+.RE
+.RS
+.BR \ \ \ \ note
+-> if \fB$LPS1\fR is set, \fIprompt_short\fR is ignored and \fB$LPS1\fR fully
+controls prompt rendering
+.RE
+.RS
+.BR \ \ \ \ validation
+-> values outside \fB0\fR/\fB1\fR/\fB2\fR are rejected during configuration parsing
 .RE
 .TP
 .I LPS1
@@ -364,6 +444,25 @@ different user than the default root.
 .I timer
 a value in seconds for the session timer
 .TP
+.I max_sessions_per_user
+maximum concurrent lshell sessions for the same user.
+Set to \fB0\fR to disable this limit (default).
+.TP
+.I max_background_jobs
+maximum active background jobs (\fB&\fR) allowed in one lshell session.
+Set to \fB0\fR to disable this limit (default).
+.TP
+.I command_timeout
+wall-clock timeout in seconds applied per executed command. Commands exceeding
+this timeout are terminated and reported as denied by runtime containment.
+Set to \fB0\fR to disable this limit (default).
+.TP
+.I max_processes
+maximum processes per spawned command via \fBRLIMIT_NPROC\fR.
+Set to \fB0\fR to disable this limit (default).
+Best practice: keep \fBcommand_timeout\fR enabled whenever \fBmax_processes\fR
+is strict (especially \fB1\fR).
+.TP
 .I umask
 set process umask for the lshell session. Value must be octal (0000 to 0777),
 for example \fB0002\fR.
@@ -415,6 +514,40 @@ ignored (uses scp(1) from within session)
 enable/disable policy introspection builtins. If set to 1 (default), users can
 run \fBpolicy-show\fR, \fBpolicy-path\fR, \fBpolicy-sudo\fR (and aliases
 \fBlpath\fR, \fBlsudo\fR). If set to 0, these commands are hidden.
+
+.SH BEST PRACTICES
+.TP
+.B Least privilege
+Prefer explicit allow-lists in \fIallowed\fR and avoid using \fB'all'\fR unless
+strictly required.
+.TP
+.B Shell escape control
+Keep \fIallowed_shell_escape\fR minimal and do not include tools that execute
+arbitrary commands (for example: find, vim, xargs).
+.TP
+.B Extension policy
+Use \fIallowed_file_extensions\fR when users should handle only known file types.
+.TP
+.B Warning policy
+Keep \fIwarning_counter\fR enabled and consider \fIstrict=1\fR for stronger
+enforcement in high-assurance environments.
+.TP
+.B Validate before rollout
+Use \fBlshell policy-show\fR to review final merged policy and command decisions
+before assigning a profile to users.
+
+.SH ACCESSIBILITY
+.TP
+.B Prompt readability
+Use a readable text prompt format (for example \fB%u@%h\fR) as the default.
+.TP
+.B Color usage
+If using ANSI colors in \fIprompt\fR or \fB$LPS1\fR, avoid color-only meaning so
+the prompt remains understandable in monochrome or low-contrast terminals.
+.TP
+.B Message clarity
+When customizing \fImessages\fR, keep phrasing concise and actionable so users
+understand how to recover from denied commands.
 
 .SH SHELL BUILTIN COMMANDS
 Here is the set of commands that are always available with lshell:
@@ -483,6 +616,33 @@ Runs lshell with a private session umask; new files default to 600 and
 directories to 700.
 .RE
 .TP
+.B $ lshell harden-init --profile sftp-only --group sftpusers --user alice --output /etc/lshell.d/sftp-only.conf
+.RS
+Generate a hardened scoped include file for a specific group and user directly from CLI flags:
+.sp
+.nf
+.ft 3
+
+# /etc/lshell.d/sftp-only.conf
+[grp:sftpusers]
+allowed         : ['pwd','ls','cd']
+allowed_shell_escape : []
+forbidden       : [';','&','|','`','>','<','$(','${']
+warning_counter : 2
+strict          : 1
+scp             : 0
+scp_upload      : 0
+scp_download    : 0
+sftp            : 1
+overssh         : []
+
+[user:alice]
+allowed         : ['pwd','ls','cd']
+warning_counter : 1
+.ft
+.fi
+.RE
+.TP
 .B $ ./test_script.lsh
 .RS
 If you include lshell in a script with the \fBshebang (e.g. #!/usr/bin/lshell)\fR and use the \fB`.lsh` extension\fR:
@@ -535,6 +695,19 @@ loglevel        : 2
 allowed         : ['ls','pwd']
 forbidden       : [';', '&', '|'] 
 warning_counter : 2
+messages        : {
+                  'unknown_syntax': 'lshell: unknown syntax: {command}',
+                  'forbidden_generic': 'lshell: forbidden {messagetype}: "{command}"',
+                  'forbidden_command': 'lshell: forbidden command: "{command}"',
+                  'forbidden_path': 'lshell: forbidden path: "{command}"',
+                  'forbidden_character': 'lshell: forbidden character: "{command}"',
+                  'forbidden_control_char': 'lshell: forbidden control char: "{command}"',
+                  'forbidden_command_over_ssh': 'lshell: forbidden {message}: "{command}"',
+                  'forbidden_scp_over_ssh': 'lshell: forbidden {message}',
+                  'warning_remaining': 'lshell: warning: {remaining} {violation_label} remaining before session termination',
+                  'session_terminated': 'lshell: session terminated: warning limit exceeded',
+                  'incident_reported': 'lshell: This incident has been reported.'
+                  }
 timer           : 0
 path            : ['/etc', '/usr']
 env_path        : ':/sbin:/usr/bin/'
@@ -608,7 +781,4 @@ On *BSD:
 .fi
 
 .SH AUTHOR
-Currently maintained by Ignace Mouzannar (ghantoos) 
-
-.SH EMAIL
-Feel free to send me your recommendations at <ghantoos@ghantoos.org>
+Currently maintained by Ignace Mouzannar <ghantoos@ghantoos.org>

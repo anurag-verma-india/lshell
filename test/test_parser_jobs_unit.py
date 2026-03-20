@@ -4,7 +4,7 @@ import io
 import os
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from lshell import builtincmd
@@ -75,6 +75,22 @@ class TestParserUtilities(unittest.TestCase):
             ["echo $(printf '%s' 'a|b')", "|", "wc -c"],
         )
 
+    def test_split_command_sequence_keeps_parameter_expansion_with_logical_tokens(self):
+        """Do not split on && / || that appear inside ${...} expansions."""
+        line = "echo ${LSHELL_WORD:-a||b&&c} && echo done"
+        self.assertEqual(
+            utils.split_command_sequence(line),
+            ["echo ${LSHELL_WORD:-a||b&&c}", "&&", "echo done"],
+        )
+
+    def test_split_command_sequence_keeps_nested_command_substitution(self):
+        """Nested $(...) blocks should be treated as one command operand."""
+        line = "echo $(printf '%s' \"$(echo a|tr a b)\") | wc -c"
+        self.assertEqual(
+            utils.split_command_sequence(line),
+            ["echo $(printf '%s' \"$(echo a|tr a b)\")", "|", "wc -c"],
+        )
+
     def test_split_command_sequence_rejects_unbalanced_quote(self):
         """Reject command lines with unmatched quotes."""
         self.assertIsNone(utils.split_command_sequence('echo "unterminated'))
@@ -91,6 +107,44 @@ class TestParserUtilities(unittest.TestCase):
         self.assertEqual(
             utils.expand_vars_quoted(line),
             "echo VALUE_A '$A' \"VALUE_B\" VALUE_A",
+        )
+
+    @patch.dict(os.environ, {"A": "VALUE_A"}, clear=False)
+    def test_expand_vars_quoted_keeps_escaped_dollar_literal(self):
+        """Backslash-escaped dollars should remain literal."""
+        line = r"echo \$A \"$A\""
+        self.assertEqual(utils.expand_vars_quoted(line), r"echo \$A \"VALUE_A\"")
+
+    @patch.dict(os.environ, {"LSHELL_SET": "set"}, clear=False)
+    def test_expand_vars_quoted_should_support_shell_parameter_default_expansion(self):
+        """Expected shell parity: expand default value forms in ${...} expressions."""
+        self.assertEqual(
+            utils.expand_vars_quoted("echo ${LSHELL_UNSET:-fallback}"),
+            "echo fallback",
+        )
+        self.assertEqual(
+            utils.expand_vars_quoted("echo ${LSHELL_SET:-fallback}"),
+            "echo set",
+        )
+
+    @patch.dict(os.environ, {"LSHELL_SET": "set"}, clear=False)
+    def test_expand_vars_quoted_should_support_shell_parameter_alternative_expansion(self):
+        """Expected shell parity: support ${VAR:+alt} semantics."""
+        self.assertEqual(
+            utils.expand_vars_quoted("echo ${LSHELL_SET:+ALT}"),
+            "echo ALT",
+        )
+        self.assertEqual(
+            utils.expand_vars_quoted("echo ${LSHELL_UNSET:+ALT}"),
+            "echo ",
+        )
+
+    @patch.dict(os.environ, {"LSHELL_LEN": "abcd"}, clear=False)
+    def test_expand_vars_quoted_should_support_shell_parameter_length_expansion(self):
+        """Expected shell parity: support ${#VAR} length expansion."""
+        self.assertEqual(
+            utils.expand_vars_quoted("echo ${#LSHELL_LEN}"),
+            "echo 4",
         )
 
     def test_parse_command_extracts_assignments_and_command(self):
@@ -219,9 +273,36 @@ class TestParserUtilities(unittest.TestCase):
 
         self.assertEqual(result, [])
 
+    def test_complete_change_dir_denied_path_does_not_suggest_root_slash(self):
+        """Denied cd completion should not suggest a standalone '/' segment."""
+        conf = {
+            "home_path": "/home/testuser",
+            "path": ["/var/log/|", ""],
+        }
+        with patch("lshell.completion.os.getcwd", return_value="/home/testuser"), patch(
+            "lshell.completion.sec.check_path", return_value=(1, conf)
+        ):
+            result = completion.complete_change_dir(
+                conf, "", "cd /var/log/", len("cd "), len("cd /var/log/")
+            )
+
+        self.assertNotIn("/", result)
+
+    def test_completenames_dot_slash_with_basename_text(self):
+        """Complete ./ commands when readline provides text without ./ prefix."""
+        conf = {"allowed": ["ls", "./shutdown.sh", "./show.sh"]}
+        result = completion.completenames(conf, "shut", "./shut", 0, 6)
+        self.assertEqual(result, ["shutdown.sh"])
+
+    def test_completenames_dot_slash_with_prefixed_text(self):
+        """Complete ./ commands when readline provides text including ./ prefix."""
+        conf = {"allowed": ["ls", "./shutdown.sh", "./show.sh"]}
+        result = completion.completenames(conf, "./shut", "./shut", 0, 6)
+        self.assertEqual(result, ["./shutdown.sh"])
+
 
 class TestBuiltinsJobsAndSource(unittest.TestCase):
-    """Tests for built-in commands around source and job control."""
+    """Tests for built-in commands around job control."""
 
     def setUp(self):
         """Save and clear global background job state before each test."""
@@ -232,33 +313,6 @@ class TestBuiltinsJobsAndSource(unittest.TestCase):
         """Restore global background job state after each test."""
         builtincmd.BACKGROUND_JOBS.clear()
         builtincmd.BACKGROUND_JOBS.extend(self._previous_jobs)
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_cmd_source_loads_exported_values(self):
-        """Load exported entries from a source file into the environment."""
-        with tempfile.NamedTemporaryFile("w", delete=False) as env_file:
-            env_file.write("export FIRST=one\n")
-            env_file.write("NOPE=ignore\n")
-            env_file.write("export SECOND='two_words'\n")
-            file_path = env_file.name
-
-        try:
-            self.assertEqual(builtincmd.cmd_source(file_path), 0)
-            self.assertEqual(os.environ.get("FIRST"), "one")
-            self.assertIsNone(os.environ.get("NOPE"))
-            self.assertEqual(os.environ.get("SECOND"), "two_words")
-        finally:
-            os.remove(file_path)
-
-    def test_cmd_source_missing_file_returns_error(self):
-        """Return an error and stderr message when the source file is missing."""
-        missing = "/tmp/lshell_missing_source_file"
-        if os.path.exists(missing):
-            os.remove(missing)
-        stderr = io.StringIO()
-        with redirect_stderr(stderr):
-            self.assertEqual(builtincmd.cmd_source(missing), 1)
-        self.assertIn("lshell: unable to read environment file", stderr.getvalue())
 
     def test_cmd_bg_fg_no_jobs(self):
         """Report failure when attempting fg with no jobs queued."""

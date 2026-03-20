@@ -1,9 +1,11 @@
 """Unit tests for lshell policy diagnostics mode."""
 
+import io
 import os
 import tempfile
 import textwrap
 import unittest
+from contextlib import redirect_stdout
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -65,7 +67,7 @@ class TestPolicy(unittest.TestCase):
             allowed = result["policy"]["allowed"]
             self.assertIn("cat", allowed)
             self.assertIn("echo ok", allowed)
-            self.assertNotIn("ls", allowed)
+            self.assertIn("ls", allowed)
             self.assertIn("|", result["policy"]["forbidden"])
             self.assertTrue(result["include_files"])
             self.assertTrue(
@@ -103,6 +105,89 @@ class TestPolicy(unittest.TestCase):
 
         decision = policy.policy_command_decision("echo ok", runtime_policy)
         self.assertTrue(decision["allowed"])
+
+    def test_policy_command_decision_denies_extensionless_argument(self):
+        """EX03b | extension policy blocks extensionless file arguments."""
+        runtime_policy = {
+            "forbidden": [";"],
+            "allowed": ["touch"],
+            "strict": 1,
+            "sudo_commands": [],
+            "allowed_file_extensions": [".log"],
+            "path": ["", ""],
+        }
+
+        decision = policy.policy_command_decision("touch report", runtime_policy)
+        self.assertFalse(decision["allowed"])
+        self.assertIn("<none>", decision["reason"])
+
+    def test_policy_command_decision_allows_dotted_parent_directory(self):
+        """EX03c | extension check uses final file suffix, not parent path dots."""
+        runtime_policy = {
+            "forbidden": [";"],
+            "allowed": ["cat"],
+            "strict": 1,
+            "sudo_commands": [],
+            "allowed_file_extensions": [".log"],
+            "path": ["", ""],
+        }
+
+        decision = policy.policy_command_decision(
+            "cat /tmp/releases.v1/audit.log", runtime_policy
+        )
+        self.assertTrue(decision["allowed"])
+
+    def test_policy_command_decision_exempts_builtin_ls_from_extension_filter(self):
+        """EX03d | builtin ls is not constrained by allowed_file_extensions."""
+        runtime_policy = {
+            "forbidden": [";"],
+            "allowed": ["ls"],
+            "strict": 1,
+            "sudo_commands": [],
+            "allowed_file_extensions": [".log"],
+            "path": ["", ""],
+        }
+
+        decision = policy.policy_command_decision("ls /tmp", runtime_policy)
+        self.assertTrue(decision["allowed"])
+
+    def test_resolve_policy_allowed_all_unquoted_expands(self):
+        """EX03e | allowed=all (unquoted) should expand successfully."""
+        with tempfile.TemporaryDirectory() as tempdir:
+            config = self._write_config(
+                tempdir,
+                """
+                [global]
+                logpath : /tmp
+                loglevel : 0
+
+                [default]
+                allowed : all
+                forbidden : [';']
+                warning_counter : 2
+                """,
+            )
+            result = policy.resolve_policy(config, "bleh", [])
+            self.assertIn("ls", result["policy"]["allowed"])
+
+    def test_resolve_policy_allowed_all_minus_list(self):
+        """EX03f | allowed supports all - [item] merge semantics."""
+        with tempfile.TemporaryDirectory() as tempdir:
+            config = self._write_config(
+                tempdir,
+                """
+                [global]
+                logpath : /tmp
+                loglevel : 0
+
+                [default]
+                allowed : all - ['echo']
+                forbidden : [';']
+                warning_counter : 2
+                """,
+            )
+            result = policy.resolve_policy(config, "bleh", [])
+            self.assertNotIn("echo", result["policy"]["allowed"])
 
     def test_build_resolved_rows_order_and_user_origin(self):
         """EX04 | rows are ordered and user section label is explicit."""
@@ -223,6 +308,59 @@ class TestPolicy(unittest.TestCase):
             result = policy.resolve_policy(config, "testuser", [])
             self.assertIn("grp:testuser", result["applied_sections"])
 
+    def test_resolve_policy_plus_minus_supported_for_all_list_merge_keys(self):
+        """EX08b | policy mode applies +/- merges on every merge-capable list key."""
+        with tempfile.TemporaryDirectory() as tempdir:
+            config = self._write_config(
+                tempdir,
+                """
+                [global]
+                logpath : /tmp
+                loglevel : 0
+
+                [default]
+                allowed : ['basecmd']
+                allowed_shell_escape : ['ase_base']
+                allowed_file_extensions : ['.log']
+                forbidden : [';']
+                overssh : ['scp', 'rsync']
+                path : ['/']
+                warning_counter : 2
+
+                [user:bleh]
+                allowed : + ['pluscmd'] - ['basecmd']
+                allowed_shell_escape : + ['ase_plus'] - ['ase_base']
+                allowed_file_extensions : + ['.txt'] - ['.log']
+                forbidden : + ['#'] - [';']
+                overssh : + ['ls'] - ['scp']
+                path : - ['/var', '/etc'] + ['/var/log']
+                """,
+            )
+
+            result = policy.resolve_policy(config, "bleh", [])
+            runtime_policy = result["policy"]
+
+            self.assertIn("pluscmd", runtime_policy["allowed"])
+            self.assertNotIn("basecmd", runtime_policy["allowed"])
+
+            self.assertEqual(set(runtime_policy["allowed_shell_escape"]), {"ase_plus"})
+            self.assertEqual(set(runtime_policy["allowed_file_extensions"]), {".txt"})
+
+            self.assertIn("#", runtime_policy["forbidden"])
+            self.assertNotIn(";", runtime_policy["forbidden"])
+
+            self.assertIn("rsync", runtime_policy["overssh"])
+            self.assertIn("ls", runtime_policy["overssh"])
+            self.assertNotIn("scp", runtime_policy["overssh"])
+
+            self.assertTrue(runtime_policy["path"][0].startswith("/|"))
+            self.assertIn(
+                f"{os.path.realpath('/var/log')}/|",
+                runtime_policy["path"][0],
+            )
+            self.assertIn(f"{os.path.realpath('/var')}/|", runtime_policy["path"][1])
+            self.assertIn(f"{os.path.realpath('/etc')}/|", runtime_policy["path"][1])
+
     def test_main_without_command_returns_success(self):
         """EX09 | policy show without command should print resolved values and exit 0."""
         with tempfile.TemporaryDirectory() as tempdir:
@@ -286,6 +424,64 @@ class TestPolicy(unittest.TestCase):
         )
         self.assertEqual(retcode, 0)
         self.assertEqual(ctx.called, "echo hi")
+
+    def test_print_user_view_includes_containment_settings(self):
+        """EX11 | policy overview includes runtime containment limits."""
+        result = {
+            "policy": {
+                "username": "bleh",
+                "strict": 1,
+                "warning_counter": 2,
+                "allowed": ["ls"],
+                "aliases": {},
+                "sudo_commands": [],
+                "timer": 0,
+                "forbidden": [";"],
+                "allowed_file_extensions": [],
+                "max_sessions_per_user": 2,
+                "max_background_jobs": 3,
+                "command_timeout": 15,
+                "max_processes": 10,
+            }
+        }
+
+        with redirect_stdout(io.StringIO()) as output:
+            policy.print_user_view(result)
+        rendered = output.getvalue()
+
+        self.assertIn("Max sessions/user      : 2", rendered)
+        self.assertIn("Max background jobs    : 3", rendered)
+        self.assertIn("Command timeout (sec)  : 15s", rendered)
+        self.assertIn("Max processes          : 10", rendered)
+
+    def test_print_user_view_shows_unlimited_for_zero_containment_limits(self):
+        """EX12 | zero-valued containment limits should render as Unlimited."""
+        result = {
+            "policy": {
+                "username": "bleh",
+                "strict": 0,
+                "warning_counter": 2,
+                "allowed": ["ls"],
+                "aliases": {},
+                "sudo_commands": [],
+                "timer": 0,
+                "forbidden": [";"],
+                "allowed_file_extensions": [],
+                "max_sessions_per_user": 0,
+                "max_background_jobs": 0,
+                "command_timeout": 0,
+                "max_processes": 0,
+            }
+        }
+
+        with redirect_stdout(io.StringIO()) as output:
+            policy.print_user_view(result)
+        rendered = output.getvalue()
+
+        self.assertIn("Max sessions/user      : Unlimited", rendered)
+        self.assertIn("Max background jobs    : Unlimited", rendered)
+        self.assertIn("Command timeout (sec)  : Unlimited", rendered)
+        self.assertIn("Max processes          : Unlimited", rendered)
 
 
 if __name__ == "__main__":

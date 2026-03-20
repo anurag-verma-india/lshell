@@ -2,6 +2,8 @@
 
 import ast
 
+from lshell import messages
+
 
 LIST_VALUE_KEYS = {
     "allowed",
@@ -39,8 +41,13 @@ INT_VALUE_KEYS = {
     "policy_commands",
     "quiet",
     "loglevel",
+    "security_audit_json",
+    "max_sessions_per_user",
+    "max_background_jobs",
+    "command_timeout",
+    "max_processes",
 }
-DICT_VALUE_KEYS = {"aliases", "env_vars"}
+DICT_VALUE_KEYS = {"aliases", "env_vars", "messages"}
 STRING_VALUE_KEYS = {
     "intro",
     "prompt",
@@ -83,9 +90,12 @@ def parse_config_value(value, key=""):
 
     Raises ValueError with user-friendly field-level errors.
     """
-    if isinstance(value, str) and key in {"allowed", "sudo_commands"}:
-        if value.strip() == "all":
-            return "all"
+    if (
+        isinstance(value, str)
+        and key in {"allowed", "sudo_commands"}
+        and is_all_literal(value)
+    ):
+        return "all"
 
     try:
         evaluated = ast.literal_eval(value)
@@ -105,6 +115,9 @@ def parse_config_value(value, key=""):
 
     if key in DICT_VALUE_KEYS and not isinstance(evaluated, dict):
         raise ValueError(f"'{key}' must be a dictionary")
+
+    if key == "messages":
+        evaluated = messages.validate_messages_config(evaluated)
 
     if key in STRING_VALUE_KEYS:
         if isinstance(evaluated, str):
